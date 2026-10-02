@@ -1354,7 +1354,7 @@ Default managed windows:
 Environment overrides:
   INTERVAL_SECONDS=1
   COSMIC_INTERVAL_SECONDS=1
-  X11_INTERVAL_SECONDS=0.25
+  X11_INTERVAL_SECONDS=1
   FORCE_BACKEND=cosmic|kwin|gnome|x11
   HELPER_PATH=${HOME}/.local/bin/cosmic-ext-window-helper
   RAW_URL=${RAW_URL}
