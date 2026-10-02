@@ -82,7 +82,17 @@ Or update directly from GitHub:
 curl -fsSL https://raw.githubusercontent.com/MagnetosphereLabs/cosmic-firefox-pip-fix/main/pip-sticky.sh | bash -s -- update
 ```
 
-The updater downloads the current script, verifies its Bash syntax, replaces the installed copy, and reinstalls the active desktop backend.
+The updater downloads the current script, verifies its Bash syntax, replaces the installed copy, and reinstalls the active desktop backend. If you are updating from the old v1 script, please uninstall it first using:
+
+```bash
+~/Apps/cosmic-firefox-pip-sticky/cosmic-firefox-pip-sticky.sh uninstall
+```
+
+Then run the install command for the current version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MagnetosphereLabs/cosmic-firefox-pip-fix/main/pip-sticky.sh | bash -s -- install
+```
 
 ---
 
