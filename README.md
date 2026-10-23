@@ -39,7 +39,7 @@ Version 2 expands the original Pop!_OS COSMIC + Firefox helper into a multi-desk
 ## ⚡ Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MagnetosphereLabs/cosmic-firefox-pip-fix/main/pip-sticky.sh | bash -s -- install
+curl -fsSL https://raw.githubusercontent.com/MagnetosphereLabs/pip-auto-sticky/main/pip-sticky.sh | bash -s -- install
 ```
 
 The installer detects the current desktop/session and installs the appropriate backend automatically.
@@ -79,7 +79,7 @@ pip-sticky update
 Or update directly from GitHub:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MagnetosphereLabs/cosmic-firefox-pip-fix/main/pip-sticky.sh | bash -s -- update
+curl -fsSL https://raw.githubusercontent.com/MagnetosphereLabs/pip-auto-sticky/main/pip-sticky.sh | bash -s -- update
 ```
 
 The updater downloads the current script, verifies its Bash syntax, replaces the installed copy, and reinstalls the active desktop backend. If you are updating from the old v1 script, please uninstall it first using:
@@ -91,7 +91,7 @@ The updater downloads the current script, verifies its Bash syntax, replaces the
 Then run the install command for the current version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MagnetosphereLabs/cosmic-firefox-pip-fix/main/pip-sticky.sh | bash -s -- install
+curl -fsSL https://raw.githubusercontent.com/MagnetosphereLabs/pip-auto-sticky/main/pip-sticky.sh | bash -s -- install
 ```
 
 ---
@@ -123,7 +123,7 @@ pip-sticky uninstall
 Or:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MagnetosphereLabs/cosmic-firefox-pip-fix/main/pip-sticky.sh | bash -s -- uninstall
+curl -fsSL https://raw.githubusercontent.com/MagnetosphereLabs/pip-auto-sticky/main/pip-sticky.sh | bash -s -- uninstall
 ```
 
 The uninstaller removes PiP Sticky's service and desktop integrations, including any KWin or GNOME backend that may have been installed during a previous desktop session.
@@ -206,6 +206,22 @@ Discord Popout
 Discord Popout ...
 ```
 
+Version 2.0.1 also recognizes Discord/Vesktop call and stream popouts whose titles
+have already changed to a participant or channel name, including popouts that
+were open before PiP Sticky started. This works across all four supported backends.
+
+The fallback requires a known Discord/Vesktop application identity and a separate,
+recognizable main window from the same client. Main windows, empty titles, branded
+ancillary windows, and common file/settings/devtools titles are excluded. KWin,
+GNOME, and X11 also require a normal, non-modal window.
+
+COSMIC's helper exposes only titles and application IDs, so its fallback is a
+heuristic: an unusual ancillary window with a bare title can still look like a
+call. Keep the main client window open when first identifying a renamed popout.
+Custom main-window titles and participant names resembling excluded dialog titles
+can prevent this fallback from matching. Canonical PiP/`Discord Popout` rules
+continue to work independently.
+
 On backends that expose richer window metadata, PiP Sticky can also use PiP window roles/types and guarded Firefox-family utility-window detection.
 
 ---
@@ -247,6 +263,9 @@ cosmic-ext-window-helper
 and runs a user-level systemd service that checks for matching windows once per second.
 
 The default query recognizes the normal Firefox/Chromium PiP titles, ` - PiP` titles, and Discord popouts while avoiding repeated work on windows already marked sticky.
+For renamed Discord/Vesktop calls, it reads one window-state snapshot with
+`python3` and adds only the matching window IDs to the query. The installer adds
+Python 3 if needed. Window titles are never evaluated as shell or query code.
 
 If the helper is missing, the installer prefers an existing `uv` installation and otherwise installs `pipx`, then installs `cosmic-ext-window-helper` in an isolated Python environment.
 
@@ -358,7 +377,15 @@ KWin, GNOME, and X11 remember windows after they have been positively identified
 
 This matters for browser and Electron popouts whose title may change from a generic popout name to a call, site, or participant name after creation.
 
-The COSMIC backend currently uses the title patterns supported by `cosmic-ext-window-helper`.
+The COSMIC backend combines the original title patterns with the guarded
+same-client secondary-window fallback described above. It rechecks that fallback
+each poll. `test` and `doctor` include those renamed windows in their results.
+
+### 5. Apply updates immediately
+
+Reinstalling or updating restarts the COSMIC/X11 user service so the running
+process picks up the new script. X11 reads the actual WM_CLASS column from
+`wmctrl -lx`, enabling both Discord identity checks and Firefox utility fallbacks.
 
 ---
 
@@ -527,6 +554,21 @@ doas
 for package installation.
 
 PiP Sticky itself remains a per-user tool.
+
+---
+
+# Regression checks
+
+From a checkout, run:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+The suite requires Python 3, Bash, and Node.js. It exercises generated KWin/GNOME
+scripts with compositor API doubles, real `wmctrl -lx` column ordering, COSMIC
+query construction, renamed popouts, main/dialog exclusions, match retention,
+and service restart behavior. These checks do not replace live desktop testing.
 
 ---
 

@@ -14,11 +14,12 @@ set -euo pipefail
 #   1. Stable PiP/popout titles used by Firefox, Chromium and Vesktop/Discord.
 #   2. Window role/type hints where the compositor exposes them.
 #   3. Browser-family identity only as a guard for structural fallbacks.
+#   4. Renamed Discord/Vesktop secondary windows, guarded by a same-client main.
 #
 # This catches Firefox/Chromium forks without maintaining a brittle package-ID
 # allowlist, while avoiding blanket "all utility windows are PiP" rules.
 
-VERSION="2.0.0"
+VERSION="2.0.1"
 APP_NAME="pip-sticky"
 DESCRIPTION="Keep Picture-in-Picture and Discord popout windows sticky and above"
 INTERVAL_SECONDS="${INTERVAL_SECONDS:-1}"
@@ -28,8 +29,7 @@ X11_INTERVAL_SECONDS="${X11_INTERVAL_SECONDS:-1}"
 # Override only for testing/troubleshooting:
 FORCE_BACKEND="${FORCE_BACKEND:-}"
 
-# Change this to the final raw URL before release.
-RAW_URL="${RAW_URL:-https://raw.githubusercontent.com/MagnetosphereLabs/cosmic-firefox-pip-fix/main/pip-sticky.sh}"
+RAW_URL="${RAW_URL:-https://raw.githubusercontent.com/MagnetosphereLabs/pip-auto-sticky/main/pip-sticky.sh}"
 
 DATA_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/${APP_NAME}"
 INSTALL_PATH="${DATA_DIR}/${APP_NAME}.sh"
@@ -43,6 +43,14 @@ SERVICE_PATH="${UNIT_DIR}/${APP_NAME}.service"
 HELPER_PATH="${HELPER_PATH:-${HOME}/.local/bin/cosmic-ext-window-helper}"
 COSMIC_QUERY="${COSMIC_QUERY:-((title ~= '^Picture[- ]in[- ]Picture$'i) or (title ~= '^Discord Popout( .*)?$'i) or (title ~= ' - PiP$'i)) and not is_sticky}"
 COSMIC_LIST_QUERY="${COSMIC_LIST_QUERY:-title ~= '^Picture[- ]in[- ]Picture$'i or title ~= '^Discord Popout( .*)?$'i or title ~= ' - PiP$'i}"
+
+# Discord now gives call/stream popouts participant or channel titles. These
+# patterns are shared by Bash, Python (COSMIC), and the generated JS backends.
+# A renamed popout must have a recognizable main window of the SAME client.
+DISCORD_APP_ID_RE='^(discord([-_]?(canary|ptb|development))?|com[.]discordapp[.]discord([._-]?(canary|ptb|development))?|vesktop|dev[.]vencord[.]vesktop)$'
+DISCORD_MAIN_TITLE_RE='^(discord([ _-]?(canary|ptb|development))?|vesktop)$|[ ][-|—–][ ](discord([ _-]?(canary|ptb|development))?|vesktop)$'
+DISCORD_APP_TITLE_RE='(^|[^a-z0-9])(discord|vesktop)([^a-z0-9]|$)'
+DISCORD_OTHER_TITLE_RE='^(about|settings|preferences|open|save|select|choose|file upload|authentication|log[ -]?in|sign[ -]?in|devtools|developer tools|permission|screen[ -]?share|sharing)([ :—–-]|$)'
 
 KWIN_ID="pipsticky"
 KWIN_STAGE="${DATA_DIR}/${KWIN_ID}"
@@ -143,6 +151,8 @@ install_capability() {
     xprop:dnf|xprop:zypper) pkg="xprop" ;;
     xprop:pacman) pkg="xorg-xprop" ;;
     curl:apt|curl:dnf|curl:pacman|curl:zypper) pkg="curl" ;;
+    python3:apt|python3:dnf|python3:zypper) pkg="python3" ;;
+    python3:pacman) pkg="python" ;;
     *)
       err "I do not know how to install '${capability}' with package manager '${pm}'."
       return 1
@@ -378,13 +388,38 @@ enable_service() {
     DESKTOP_SESSION XDG_SESSION_TYPE XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS \
     XAUTHORITY >/dev/null 2>&1 || true
   systemctl --user daemon-reload
-  systemctl --user enable --now "${APP_NAME}.service"
+  systemctl --user enable "${APP_NAME}.service"
+  # enable --now leaves an already-running service on the old script/query.
+  systemctl --user restart "${APP_NAME}.service"
 }
 
 disable_service() {
   systemctl --user disable --now "${APP_NAME}.service" >/dev/null 2>&1 || true
   rm -f "${SERVICE_PATH}"
   systemctl --user daemon-reload >/dev/null 2>&1 || true
+}
+
+write_discord_matchers_js() {
+  printf 'const discordAppIdRe = /%s/i;\n' "${DISCORD_APP_ID_RE}"
+  printf 'const discordMainTitleRe = /%s/i;\n' "${DISCORD_MAIN_TITLE_RE}"
+  printf 'const discordAppTitleRe = /%s/i;\n' "${DISCORD_APP_TITLE_RE}"
+  printf 'const discordOtherTitleRe = /%s/i;\n' "${DISCORD_OTHER_TITLE_RE}"
+  cat <<'JS'
+
+function discordClientId(values) {
+    for (const value of values) {
+        const id = normalized(value);
+        if (discordAppIdRe.test(id))
+            return id;
+    }
+    return '';
+}
+
+function discordSecondaryTitle(title) {
+    const t = normalized(title);
+    return t !== '' && !discordAppTitleRe.test(t) && !discordOtherTitleRe.test(t);
+}
+JS
 }
 
 write_kwin_package() {
@@ -397,9 +432,9 @@ write_kwin_package() {
     "Name": "PiP Sticky",
     "Description": "Keep Picture-in-Picture and Discord popout windows above and on all desktops",
     "Id": "pipsticky",
-    "Version": "2.0.0",
+    "Version": "2.0.1",
     "License": "MIT",
-    "Website": "https://github.com/MagnetosphereLabs/cosmic-firefox-pip-fix"
+    "Website": "https://github.com/MagnetosphereLabs/pip-auto-sticky"
   },
   "X-Plasma-API": "javascript",
   "X-Plasma-MainScript": "code/main.js",
@@ -407,7 +442,8 @@ write_kwin_package() {
 }
 JSON
 
-  cat > "${KWIN_STAGE}/contents/code/main.js" <<'JS'
+  write_discord_matchers_js > "${KWIN_STAGE}/contents/code/main.js"
+  cat >> "${KWIN_STAGE}/contents/code/main.js" <<'JS'
 /*
  * PiP Sticky - KWin backend
  *
@@ -464,6 +500,21 @@ function roleLooksLikePiP(window) {
            role === "pipwindow";
 }
 
+function discordIdentity(window) {
+    return discordClientId([window.resourceClass, window.resourceName, window.desktopFileName]);
+}
+
+function isRenamedDiscordPopout(window) {
+    const id = discordIdentity(window);
+    if (!id || !window.normalWindow || window.modal || window.dialog ||
+        !discordSecondaryTitle(window.caption))
+        return false;
+
+    return workspace.stackingOrder.some(other => other !== window &&
+        other.normalWindow && !other.modal && !other.dialog &&
+        discordIdentity(other) === id && discordMainTitleRe.test(normalized(other.caption)));
+}
+
 function isManagedTarget(window) {
     if (!window)
         return false;
@@ -471,6 +522,9 @@ function isManagedTarget(window) {
     const title = normalized(window.caption);
 
     if (titleLooksLikePiP(title) || titleLooksLikeDiscordPopout(title))
+        return true;
+
+    if (isRenamedDiscordPopout(window))
         return true;
 
     // Some Chromium PiP implementations expose a stable native window role/name
@@ -532,22 +586,27 @@ function safeConnect(signal, callback) {
         signal.connect(callback);
 }
 
+function recheckWindows() {
+    for (const window of workspace.stackingOrder)
+        applyRule(window);
+}
+
 function watchWindow(window) {
     if (!window)
         return;
 
-    applyRule(window);
-
     // Titles/classes can settle after the toplevel is first announced.
-    safeConnect(window.captionChanged, function() { applyRule(window); });
-    safeConnect(window.windowClassChanged, function() { applyRule(window); });
+    // Recheck peers too: the main window's identity/title may settle last.
+    safeConnect(window.captionChanged, recheckWindows);
+    safeConnect(window.windowClassChanged, recheckWindows);
     safeConnect(window.windowRoleChanged, function() { applyRule(window); });
-    safeConnect(window.desktopFileNameChanged, function() { applyRule(window); });
+    safeConnect(window.desktopFileNameChanged, recheckWindows);
 
     // Reassert the policy if an application changes it after creation.
     safeConnect(window.keepAboveChanged, function() { applyRule(window); });
     safeConnect(window.desktopsChanged, function() { applyRule(window); });
     safeConnect(window.closed, function() { forgetManaged(window); });
+    recheckWindows();
 }
 
 workspace.windowAdded.connect(watchWindow);
@@ -622,12 +681,13 @@ write_gnome_extension() {
   "name": "PiP Sticky",
   "description": "Keep Picture-in-Picture and Discord popout windows above and on all workspaces",
   "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
-  "version": 20000,
-  "url": "https://github.com/MagnetosphereLabs/cosmic-firefox-pip-fix"
+  "version": 20001,
+  "url": "https://github.com/MagnetosphereLabs/pip-auto-sticky"
 }
 JSON
 
-  cat > "${GNOME_DIR}/extension.js" <<'JS'
+  write_discord_matchers_js > "${GNOME_DIR}/extension.js"
+  cat >> "${GNOME_DIR}/extension.js" <<'JS'
 /*
  * PiP Sticky - GNOME Shell backend
  *
@@ -706,6 +766,31 @@ function isFirefoxMediaPiP(window) {
     }
 }
 
+function discordIdentity(window) {
+    return discordClientId([
+        safeCall(window, 'get_wm_class'),
+        safeCall(window, 'get_wm_class_instance'),
+        safeCall(window, 'get_gtk_application_id'),
+        safeCall(window, 'get_sandboxed_app_id'),
+    ]);
+}
+
+function isNormalWindow(window) {
+    return safeCall(window, 'get_window_type') === Meta.WindowType.NORMAL &&
+        !safeCall(window, 'is_modal') && !safeCall(window, 'is_override_redirect');
+}
+
+function isRenamedDiscordPopout(window) {
+    const id = discordIdentity(window);
+    if (!id || !isNormalWindow(window) ||
+        !discordSecondaryTitle(safeCall(window, 'get_title')))
+        return false;
+
+    return global.display.list_all_windows().some(other => other !== window &&
+        isNormalWindow(other) && discordIdentity(other) === id &&
+        discordMainTitleRe.test(normalized(safeCall(other, 'get_title'))));
+}
+
 function isManagedTarget(window) {
     if (!window)
         return false;
@@ -713,6 +798,9 @@ function isManagedTarget(window) {
     const title = safeCall(window, 'get_title');
 
     if (titleLooksLikePiP(title) || titleLooksLikeDiscordPopout(title))
+        return true;
+
+    if (isRenamedDiscordPopout(window))
         return true;
 
     if (roleLooksLikePiP(window))
@@ -780,6 +868,13 @@ export default class PipStickyExtension extends Extension {
         this._windows.delete(window);
     }
 
+    _recheckWindows() {
+        if (this._windows) {
+            for (const window of this._windows.keys())
+                this._apply(window);
+        }
+    }
+
     _watchWindow(window) {
         if (!window || !this._windows || this._windows.has(window))
             return;
@@ -799,15 +894,18 @@ export default class PipStickyExtension extends Extension {
             }
         };
 
-        connect('notify::title', () => this._apply(window));
-        connect('notify::wm-class', () => this._apply(window));
-        connect('shown', () => this._apply(window));
+        connect('notify::title', () => this._recheckWindows());
+        connect('notify::wm-class', () => this._recheckWindows());
+        connect('notify::wm-class-instance', () => this._recheckWindows());
+        connect('notify::gtk-application-id', () => this._recheckWindows());
+        connect('notify::sandboxed-app-id', () => this._recheckWindows());
+        connect('shown', () => this._recheckWindows());
         connect('notify::above', () => this._apply(window));
         connect('notify::on-all-workspaces', () => this._apply(window));
         connect('unmanaged', () => this._forgetWindow(window));
 
         this._windows.set(window, state);
-        this._apply(window);
+        this._recheckWindows();
     }
 
     _apply(window) {
@@ -953,9 +1051,32 @@ x11_class_is_firefox_family() {
   [[ "${klass}" =~ firefox|floorp|librewolf|waterfox|zen-browser|zen_browser|icecat ]]
 }
 
+discord_title_is_main() {
+  [[ "$(lower "$1")" =~ ${DISCORD_MAIN_TITLE_RE} ]]
+}
+
+discord_title_is_secondary() {
+  local t
+  t="$(lower "$1")"
+  [[ -n "${t//[[:space:]]/}" &&
+     ! "${t}" =~ ${DISCORD_APP_TITLE_RE} &&
+     ! "${t}" =~ ${DISCORD_OTHER_TITLE_RE} ]]
+}
+
+x11_class_is_discord() {
+  local klass
+  klass="$(lower "$1")"
+  # wmctrl -x renders WM_CLASS as instance.class. Either member can be a
+  # reverse-DNS Flatpak ID, so also check each side of the separator.
+  [[ "${klass}" =~ ${DISCORD_APP_ID_RE} ||
+     "${klass#*.}" =~ ${DISCORD_APP_ID_RE} ||
+     "${klass%.*}" =~ ${DISCORD_APP_ID_RE} ]]
+}
+
 x11_hints_are_target() {
   local id="$1"
   local klass="$2"
+  local title="${3:-}" has_main="${4:-0}"
   local props=""
 
   # xprop is optional. When available it gives us structural fallbacks for
@@ -964,7 +1085,7 @@ x11_hints_are_target() {
     return 1
   fi
 
-  props="$(xprop -id "${id}" WM_WINDOW_ROLE _NET_WM_WINDOW_TYPE 2>/dev/null || true)"
+  props="$(xprop -id "${id}" WM_WINDOW_ROLE _NET_WM_WINDOW_TYPE _NET_WM_STATE 2>/dev/null || true)"
 
   if printf '%s\n' "${props}" | grep -Eqi 'picture.?in.?picture|pipwindow'; then
     return 0
@@ -972,6 +1093,15 @@ x11_hints_are_target() {
 
   if x11_class_is_firefox_family "${klass}" &&
      printf '%s\n' "${props}" | grep -q '_NET_WM_WINDOW_TYPE_UTILITY'; then
+    return 0
+  fi
+
+  # Renamed Discord popouts are normal, non-modal secondary windows. Require
+  # a main window with the same WM_CLASS, not just a Discord-looking title.
+  if [[ "${has_main}" == "1" ]] && x11_class_is_discord "${klass}" &&
+     discord_title_is_secondary "${title}" &&
+     printf '%s\n' "${props}" | grep -q '_NET_WM_WINDOW_TYPE_NORMAL' &&
+     ! printf '%s\n' "${props}" | grep -Eq '_NET_WM_WINDOW_TYPE_(DIALOG|UTILITY|SPLASH)|_NET_WM_STATE_MODAL'; then
     return 0
   fi
 
@@ -983,29 +1113,44 @@ x11_is_target() {
   local klass="$2"
   local title="$3"
 
-  x11_title_is_target "${title}" || x11_hints_are_target "${id}" "${klass}"
+  x11_title_is_target "${title}" || x11_hints_are_target "${id}" "${klass}" "${title}" "${4:-0}"
 }
 
 x11_apply_once() {
   local verbose="${1:-0}"
-  local id desktop host klass title
-  local -A seen=()
+  local id desktop host klass title windows
+  local -A seen=() discord_mains=()
 
   import_session_env
 
-  while read -r id desktop host klass title; do
+  # A failed enumeration must not discard matches for still-open windows.
+  windows="$(wmctrl -lx 2>/dev/null)" || return 0
+
+  # -lx columns are XID, desktop, WM_CLASS, host, title (not host, class).
+  while read -r id desktop klass host title; do
+    [[ -n "${id:-}" ]] || continue
+    if x11_class_is_discord "${klass:-}" && discord_title_is_main "${title:-}"; then
+      discord_mains["$(lower "${klass}")"]=1
+    fi
+  done <<< "${windows}"
+
+  while read -r id desktop klass host title; do
     [[ -n "${id:-}" ]] || continue
     seen["${id}"]=1
+    if [[ -n "${X11_MANAGED[${id}]+yes}" &&
+          "${X11_MANAGED[${id}]}" != "${klass:-unknown}" ]]; then
+      unset 'X11_MANAGED[$id]'
+    fi
 
-    if [[ -n "${X11_MANAGED[${id}]+yes}" ]] ||
-       x11_is_target "${id}" "${klass:-}" "${title:-}"; then
+    if [[ "${X11_MANAGED[${id}]:-}" == "${klass:-unknown}" ]] ||
+       x11_is_target "${id}" "${klass:-}" "${title:-}" "${discord_mains[$(lower "${klass:-unknown}")]:-0}"; then
       X11_MANAGED["${id}"]="${klass:-unknown}"
       wmctrl -ir "${id}" -b add,above,sticky >/dev/null 2>&1 || true
       if [[ "${verbose}" == "1" ]]; then
         say "managed ${id}  class=${klass}  title=${title}"
       fi
     fi
-  done < <(wmctrl -lx 2>/dev/null || true)
+  done <<< "${windows}"
 
   # Forget closed windows so a future X11 XID reuse cannot inherit the rule.
   for id in "${!X11_MANAGED[@]}"; do
@@ -1014,6 +1159,51 @@ x11_apply_once() {
     fi
   done
 }
+
+cosmic_discord_query() {
+  local helper="$1" snapshot
+  # The helper exposes no roles/window types. Use one consistent snapshot and
+  # require a branded main window of the exact same app_id before selecting a
+  # bare participant/channel title. Never interpolate titles into query code.
+  snapshot="$("${helper}" state 2>/dev/null)" || return 0
+  printf '%s' "${snapshot}" | python3 -c '
+import json
+import re
+import sys
+
+app_re, main_re, brand_re, other_re = [re.compile(p, re.I) for p in sys.argv[1:]]
+try:
+    windows = json.load(sys.stdin)
+    if not isinstance(windows, list):
+        raise ValueError("expected a window list")
+    windows = [w for w in windows if isinstance(w, dict)]
+    def field(w, key):
+        value = w.get(key, "")
+        return value.strip() if isinstance(value, str) else ""
+    mains = {field(w, "app_id").lower() for w in windows
+             if app_re.search(field(w, "app_id")) and main_re.search(field(w, "title"))}
+    queries = []
+    for window in windows:
+        app_id, title, wid = [field(window, key) for key in ("app_id", "title", "id")]
+        if (app_id.lower() in mains and title and not brand_re.search(title)
+                and not other_re.search(title) and re.fullmatch(r"[A-Za-z0-9_-]+", wid)):
+            queries.append("id = " + chr(39) + wid + chr(39))
+    print(" or ".join(queries))
+except (ValueError, TypeError):
+    # Keep the original PiP/title query available if a helper returns bad JSON.
+    pass
+' "${DISCORD_APP_ID_RE}" "${DISCORD_MAIN_TITLE_RE}" "${DISCORD_APP_TITLE_RE}" "${DISCORD_OTHER_TITLE_RE}"
+}
+
+cosmic_apply_once() {
+  local helper="$1" query="${COSMIC_QUERY}" discord_query
+  discord_query="$(cosmic_discord_query "${helper}")"
+  if [[ -n "${discord_query}" ]]; then
+    query="(${query}) or ((${discord_query}) and not is_sticky)"
+  fi
+  "${helper}" sticky true "${query}"
+}
+
 run_cosmic() {
   local helper
   helper="$(find_helper || true)"
@@ -1025,7 +1215,7 @@ run_cosmic() {
   say "${APP_NAME} ${VERSION} running: backend=cosmic interval=${COSMIC_INTERVAL_SECONDS}s"
   while true; do
     import_session_env
-    "${helper}" sticky true "${COSMIC_QUERY}" >/dev/null 2>&1 || true
+    cosmic_apply_once "${helper}" >/dev/null 2>&1 || true
     sleep "${COSMIC_INTERVAL_SECONDS}"
   done
 }
@@ -1092,6 +1282,9 @@ install_cmd() {
   case "${backend}" in
     cosmic)
       ensure_cosmic_helper
+      if ! have python3; then
+        install_capability python3
+      fi
       enable_service cosmic
       ;;
     kwin)
@@ -1162,7 +1355,7 @@ uninstall_cmd() {
 }
 
 test_cosmic() {
-  local helper
+  local helper list_query="${COSMIC_LIST_QUERY}" discord_query
   helper="$(find_helper || true)"
   if [[ -z "${helper}" ]]; then
     err "cosmic-ext-window-helper not found."
@@ -1170,14 +1363,18 @@ test_cosmic() {
   fi
 
   import_session_env
+  discord_query="$(cosmic_discord_query "${helper}")"
+  if [[ -n "${discord_query}" ]]; then
+    list_query="(${list_query}) or (${discord_query})"
+  fi
   say "Matching windows before:"
-  "${helper}" list "${COSMIC_LIST_QUERY}" || true
+  "${helper}" list "${list_query}" || true
   say
   say "Applying sticky..."
-  "${helper}" sticky true "${COSMIC_QUERY}" || true
+  cosmic_apply_once "${helper}" || true
   say
   say "Matching windows after:"
-  "${helper}" list "${COSMIC_LIST_QUERY}" || true
+  "${helper}" list "${list_query}" || true
 }
 
 test_x11() {
@@ -1382,4 +1579,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
