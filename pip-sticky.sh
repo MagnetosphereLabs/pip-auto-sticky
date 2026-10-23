@@ -14,12 +14,11 @@ set -euo pipefail
 #   1. Stable PiP/popout titles used by Firefox, Chromium and Vesktop/Discord.
 #   2. Window role/type hints where the compositor exposes them.
 #   3. Browser-family identity only as a guard for structural fallbacks.
-#   4. Renamed Discord/Vesktop secondary windows, guarded by a same-client main.
 #
 # This catches Firefox/Chromium forks without maintaining a brittle package-ID
 # allowlist, while avoiding blanket "all utility windows are PiP" rules.
 
-VERSION="2.0.1"
+VERSION="2.0.2"
 APP_NAME="pip-sticky"
 DESCRIPTION="Keep Picture-in-Picture and Discord popout windows sticky and above"
 INTERVAL_SECONDS="${INTERVAL_SECONDS:-1}"
@@ -44,9 +43,6 @@ HELPER_PATH="${HELPER_PATH:-${HOME}/.local/bin/cosmic-ext-window-helper}"
 COSMIC_QUERY="${COSMIC_QUERY:-((title ~= '^Picture[- ]in[- ]Picture$'i) or (title ~= '^Discord Popout( .*)?$'i) or (title ~= ' - PiP$'i)) and not is_sticky}"
 COSMIC_LIST_QUERY="${COSMIC_LIST_QUERY:-title ~= '^Picture[- ]in[- ]Picture$'i or title ~= '^Discord Popout( .*)?$'i or title ~= ' - PiP$'i}"
 
-# Discord now gives call/stream popouts participant or channel titles. These
-# patterns are shared by Bash, Python (COSMIC), and the generated JS backends.
-# A renamed popout must have a recognizable main window of the SAME client.
 DISCORD_APP_ID_RE='^(discord([-_]?(canary|ptb|development))?|com[.]discordapp[.]discord([._-]?(canary|ptb|development))?|vesktop|dev[.]vencord[.]vesktop)$'
 DISCORD_MAIN_TITLE_RE='^(discord([ _-]?(canary|ptb|development))?|vesktop)$|[ ][-|—–][ ](discord([ _-]?(canary|ptb|development))?|vesktop)$'
 DISCORD_APP_TITLE_RE='(^|[^a-z0-9])(discord|vesktop)([^a-z0-9]|$)'
@@ -389,7 +385,6 @@ enable_service() {
     XAUTHORITY >/dev/null 2>&1 || true
   systemctl --user daemon-reload
   systemctl --user enable "${APP_NAME}.service"
-  # enable --now leaves an already-running service on the old script/query.
   systemctl --user restart "${APP_NAME}.service"
 }
 
@@ -432,7 +427,7 @@ write_kwin_package() {
     "Name": "PiP Sticky",
     "Description": "Keep Picture-in-Picture and Discord popout windows above and on all desktops",
     "Id": "pipsticky",
-    "Version": "2.0.1",
+    "Version": "2.0.2",
     "License": "MIT",
     "Website": "https://github.com/MagnetosphereLabs/pip-auto-sticky"
   },
@@ -596,7 +591,6 @@ function watchWindow(window) {
         return;
 
     // Titles/classes can settle after the toplevel is first announced.
-    // Recheck peers too: the main window's identity/title may settle last.
     safeConnect(window.captionChanged, recheckWindows);
     safeConnect(window.windowClassChanged, recheckWindows);
     safeConnect(window.windowRoleChanged, function() { applyRule(window); });
@@ -681,7 +675,7 @@ write_gnome_extension() {
   "name": "PiP Sticky",
   "description": "Keep Picture-in-Picture and Discord popout windows above and on all workspaces",
   "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
-  "version": 20001,
+  "version": 20002,
   "url": "https://github.com/MagnetosphereLabs/pip-auto-sticky"
 }
 JSON
@@ -1066,8 +1060,6 @@ discord_title_is_secondary() {
 x11_class_is_discord() {
   local klass
   klass="$(lower "$1")"
-  # wmctrl -x renders WM_CLASS as instance.class. Either member can be a
-  # reverse-DNS Flatpak ID, so also check each side of the separator.
   [[ "${klass}" =~ ${DISCORD_APP_ID_RE} ||
      "${klass#*.}" =~ ${DISCORD_APP_ID_RE} ||
      "${klass%.*}" =~ ${DISCORD_APP_ID_RE} ]]
@@ -1096,8 +1088,6 @@ x11_hints_are_target() {
     return 0
   fi
 
-  # Renamed Discord popouts are normal, non-modal secondary windows. Require
-  # a main window with the same WM_CLASS, not just a Discord-looking title.
   if [[ "${has_main}" == "1" ]] && x11_class_is_discord "${klass}" &&
      discord_title_is_secondary "${title}" &&
      printf '%s\n' "${props}" | grep -q '_NET_WM_WINDOW_TYPE_NORMAL' &&
@@ -1123,10 +1113,8 @@ x11_apply_once() {
 
   import_session_env
 
-  # A failed enumeration must not discard matches for still-open windows.
   windows="$(wmctrl -lx 2>/dev/null)" || return 0
 
-  # -lx columns are XID, desktop, WM_CLASS, host, title (not host, class).
   while read -r id desktop klass host title; do
     [[ -n "${id:-}" ]] || continue
     if x11_class_is_discord "${klass:-}" && discord_title_is_main "${title:-}"; then
@@ -1162,9 +1150,6 @@ x11_apply_once() {
 
 cosmic_discord_query() {
   local helper="$1" snapshot
-  # The helper exposes no roles/window types. Use one consistent snapshot and
-  # require a branded main window of the exact same app_id before selecting a
-  # bare participant/channel title. Never interpolate titles into query code.
   snapshot="$("${helper}" state 2>/dev/null)" || return 0
   printf '%s' "${snapshot}" | python3 -c '
 import json
@@ -1190,7 +1175,6 @@ try:
             queries.append("id = " + chr(39) + wid + chr(39))
     print(" or ".join(queries))
 except (ValueError, TypeError):
-    # Keep the original PiP/title query available if a helper returns bad JSON.
     pass
 ' "${DISCORD_APP_ID_RE}" "${DISCORD_MAIN_TITLE_RE}" "${DISCORD_APP_TITLE_RE}" "${DISCORD_OTHER_TITLE_RE}"
 }
@@ -1579,6 +1563,6 @@ main() {
   esac
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
   main "$@"
 fi

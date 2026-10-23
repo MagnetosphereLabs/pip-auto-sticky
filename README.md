@@ -206,22 +206,6 @@ Discord Popout
 Discord Popout ...
 ```
 
-Version 2.0.1 also recognizes Discord/Vesktop call and stream popouts whose titles
-have already changed to a participant or channel name, including popouts that
-were open before PiP Sticky started. This works across all four supported backends.
-
-The fallback requires a known Discord/Vesktop application identity and a separate,
-recognizable main window from the same client. Main windows, empty titles, branded
-ancillary windows, and common file/settings/devtools titles are excluded. KWin,
-GNOME, and X11 also require a normal, non-modal window.
-
-COSMIC's helper exposes only titles and application IDs, so its fallback is a
-heuristic: an unusual ancillary window with a bare title can still look like a
-call. Keep the main client window open when first identifying a renamed popout.
-Custom main-window titles and participant names resembling excluded dialog titles
-can prevent this fallback from matching. Canonical PiP/`Discord Popout` rules
-continue to work independently.
-
 On backends that expose richer window metadata, PiP Sticky can also use PiP window roles/types and guarded Firefox-family utility-window detection.
 
 ---
@@ -263,9 +247,6 @@ cosmic-ext-window-helper
 and runs a user-level systemd service that checks for matching windows once per second.
 
 The default query recognizes the normal Firefox/Chromium PiP titles, ` - PiP` titles, and Discord popouts while avoiding repeated work on windows already marked sticky.
-For renamed Discord/Vesktop calls, it reads one window-state snapshot with
-`python3` and adds only the matching window IDs to the query. The installer adds
-Python 3 if needed. Window titles are never evaluated as shell or query code.
 
 If the helper is missing, the installer prefers an existing `uv` installation and otherwise installs `pipx`, then installs `cosmic-ext-window-helper` in an isolated Python environment.
 
@@ -377,15 +358,7 @@ KWin, GNOME, and X11 remember windows after they have been positively identified
 
 This matters for browser and Electron popouts whose title may change from a generic popout name to a call, site, or participant name after creation.
 
-The COSMIC backend combines the original title patterns with the guarded
-same-client secondary-window fallback described above. It rechecks that fallback
-each poll. `test` and `doctor` include those renamed windows in their results.
-
-### 5. Apply updates immediately
-
-Reinstalling or updating restarts the COSMIC/X11 user service so the running
-process picks up the new script. X11 reads the actual WM_CLASS column from
-`wmctrl -lx`, enabling both Discord identity checks and Firefox utility fallbacks.
+Renamed Discord/Vesktop popouts also match when a recognizable main window of the same client is open. KWin, GNOME, and X11 exclude dialog and modal windows; COSMIC uses app IDs and titles because the helper exposes no window types. Custom main-window titles or unusual ancillary windows can affect this fallback.
 
 ---
 
@@ -554,21 +527,6 @@ doas
 for package installation.
 
 PiP Sticky itself remains a per-user tool.
-
----
-
-# Regression checks
-
-From a checkout, run:
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-The suite requires Python 3, Bash, and Node.js. It exercises generated KWin/GNOME
-scripts with compositor API doubles, real `wmctrl -lx` column ordering, COSMIC
-query construction, renamed popouts, main/dialog exclusions, match retention,
-and service restart behavior. These checks do not replace live desktop testing.
 
 ---
 
