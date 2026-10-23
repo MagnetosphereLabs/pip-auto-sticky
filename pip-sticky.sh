@@ -18,7 +18,7 @@ set -euo pipefail
 # This catches Firefox/Chromium forks without maintaining a brittle package-ID
 # allowlist, while avoiding blanket "all utility windows are PiP" rules.
 
-VERSION="2.0.2"
+VERSION="2.0.3"
 APP_NAME="pip-sticky"
 DESCRIPTION="Keep Picture-in-Picture and Discord popout windows sticky and above"
 INTERVAL_SECONDS="${INTERVAL_SECONDS:-1}"
@@ -427,7 +427,7 @@ write_kwin_package() {
     "Name": "PiP Sticky",
     "Description": "Keep Picture-in-Picture and Discord popout windows above and on all desktops",
     "Id": "pipsticky",
-    "Version": "2.0.2",
+    "Version": "2.0.3",
     "License": "MIT",
     "Website": "https://github.com/MagnetosphereLabs/pip-auto-sticky"
   },
@@ -675,7 +675,7 @@ write_gnome_extension() {
   "name": "PiP Sticky",
   "description": "Keep Picture-in-Picture and Discord popout windows above and on all workspaces",
   "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
-  "version": 20002,
+  "version": 20003,
   "url": "https://github.com/MagnetosphereLabs/pip-auto-sticky"
 }
 JSON
@@ -1316,6 +1316,125 @@ update_cmd() {
   exec "${INSTALL_PATH}" install
 }
 
+popout_drag_cmd() {
+  local mode="${1:-install}"
+  if (( $# > 2 )) || [[ "${mode}" != install && "${mode}" != remove && "${mode}" != css ]]; then
+    err "Usage: ${APP_NAME} popout-drag [install|remove|css] [quickCss.css]"
+    return 1
+  fi
+  if ! have python3; then
+    install_capability python3
+  fi
+
+  python3 - "${mode}" "${2:-}" <<'PY'
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+import tempfile
+
+CSS = '''[data-popout-root="true"]::after {
+    content: "" !important;
+    display: block !important;
+    position: fixed !important;
+    box-sizing: border-box !important;
+    top: 4px !important;
+    left: calc(50% - 40px) !important;
+    width: 80px !important;
+    height: 14px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 1px solid rgba(0, 0, 0, 0.4) !important;
+    border-radius: 7px !important;
+    background: rgba(140, 140, 140, 0.75) !important;
+    z-index: 2147483647 !important;
+    pointer-events: auto !important;
+    user-select: none !important;
+    -webkit-app-region: drag !important;
+    app-region: drag !important;
+}
+[data-popout-root="true"]:fullscreen::after,
+:fullscreen [data-popout-root="true"]::after {
+    display: none !important;
+}
+'''
+START = b"\n/* pip-sticky popout-drag start */\n"
+END = b"/* pip-sticky popout-drag end */\n"
+BLOCK = START + CSS.encode("utf-8") + END
+PATTERN = re.compile(re.escape(START) + b".*?" + re.escape(END), re.DOTALL)
+
+def apply():
+    mode, supplied = sys.argv[1:]
+    if mode == "css":
+        print(CSS, end="")
+        return
+    if supplied:
+        selected = Path(supplied).expanduser()
+        if selected.name != "quickCss.css":
+            raise ValueError("Expected a quickCss.css file.")
+        candidates = [selected]
+    elif os.environ.get("VENCORD_USER_DATA_DIR"):
+        candidates = [Path(os.environ["VENCORD_USER_DATA_DIR"]) / "settings/quickCss.css"]
+    else:
+        config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        candidates = [config / "vesktop/settings/quickCss.css",
+                      Path.home() / ".var/app/dev.vencord.Vesktop/config/vesktop/settings/quickCss.css"]
+    files = list(dict.fromkeys(path.resolve() for path in candidates if path.parent.is_dir()))
+    if not files:
+        raise ValueError("Vesktop Quick CSS directory not found. Run Vesktop once or pass its quickCss.css path.")
+    if len(files) > 1:
+        raise ValueError("Multiple Quick CSS files found. Pass the one you use:\n" +
+                         "\n".join(str(path) for path in files))
+    path = files[0]
+    if mode == "install":
+        selected = next(candidate for candidate in candidates if candidate.resolve() == path)
+        settings_path = selected.parent / "settings.json"
+        if settings_path.is_file():
+            settings = json.loads(settings_path.read_bytes())
+            if not isinstance(settings, dict):
+                raise ValueError("Vencord settings must be a JSON object.")
+            if settings.get("useQuickCss") is False:
+                raise ValueError("Quick CSS is disabled in Vencord settings. Enable it there before installing this fix.")
+    existed = path.exists()
+    original = path.read_bytes() if existed else b""
+    base, count = PATTERN.subn(b"", original)
+    if START.strip() in base or END.strip() in base:
+        raise ValueError("Incomplete popout-drag CSS block. Restore your Quick CSS backup before retrying.")
+    updated = base + BLOCK if mode == "install" else base
+    if updated == original:
+        print("Popout drag fix is already installed." if mode == "install" else "Popout drag fix is not installed.")
+        return
+    permissions = stat.S_IMODE(path.stat().st_mode) if existed else 0o600
+    if existed:
+        fd, backup = tempfile.mkstemp(prefix="quickCss.css.pip-sticky-", suffix=".bak", dir=path.parent)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(original)
+        print("Backup: " + backup)
+    fd, pending = tempfile.mkstemp(prefix="quickCss.css.pip-sticky-", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), permissions)
+            stream.write(updated)
+        if (path.exists() != existed) or (existed and path.read_bytes() != original):
+            raise ValueError("Quick CSS changed while applying the fix. Retry the command.")
+        os.replace(pending, path)
+    finally:
+        if os.path.exists(pending):
+            os.unlink(pending)
+    print("Installed popout-only drag handle: " + str(path) if mode == "install" else "Removed popout drag fix: " + str(path))
+    if mode == "install":
+        print("Reopen the popout, then drag the small bar at its top center. Restart Vesktop if needed.")
+
+try:
+    apply()
+except (OSError, ValueError) as error:
+    print("ERROR: " + str(error), file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 uninstall_cmd() {
   disable_service
 
@@ -1517,6 +1636,8 @@ Usage:
   ${APP_NAME} test          Apply/test the active backend once
   ${APP_NAME} logs          Show recent PiP Sticky logs
   ${APP_NAME} doctor        Print diagnostics useful for bug reports
+  ${APP_NAME} popout-drag [install|remove|css] [quickCss.css]
+                           Add/remove a drag handle only in Vesktop/Vencord popouts
   ${APP_NAME} run           Internal polling loop for COSMIC/X11
   ${APP_NAME} version       Print version
   ${APP_NAME} help          Show this help
@@ -1552,6 +1673,7 @@ main() {
     test) test_cmd ;;
     logs) logs_cmd ;;
     doctor) doctor_cmd ;;
+    popout-drag) popout_drag_cmd "${@:2}" ;;
     run) run_cmd ;;
     version|--version|-V) say "${VERSION}" ;;
     help|-h|--help|"") usage ;;

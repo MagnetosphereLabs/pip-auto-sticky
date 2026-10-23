@@ -373,6 +373,8 @@ Renamed Discord/Vesktop popouts also match when a recognizable main window of th
 | `pip-sticky test` | Run a backend-specific test |
 | `pip-sticky logs` | Show recent PiP Sticky logs |
 | `pip-sticky doctor` | Print detailed diagnostics for troubleshooting/bug reports |
+| `pip-sticky popout-drag install` | Add a drag handle only inside Vesktop/Vencord popouts |
+| `pip-sticky popout-drag remove` | Remove that handle and preserve the rest of Quick CSS |
 | `pip-sticky version` | Print the installed version |
 | `pip-sticky help` | Show command help |
 
@@ -422,6 +424,30 @@ KWin and GNOME log managed windows with:
 ```
 
 COSMIC and X11 logs come from the user systemd service.
+
+### Vesktop popouts without a draggable titlebar
+
+```bash
+pip-sticky popout-drag install
+```
+
+Reopen the popout, then drag the small gray bar at its top center. Restart Vesktop
+if the CSS does not reload immediately. The handle uses Electron's draggable
+region support, independent of the desktop backend, and targets only
+`[data-popout-root="true"]`. It does not change native-titlebar preferences.
+
+The command appends a marked block to Vesktop's Quick CSS and backs up an existing
+file. It detects native and Flatpak settings. For a custom location or Discord
+with Vencord, pass the exact file:
+
+```bash
+pip-sticky popout-drag install /path/to/quickCss.css
+pip-sticky popout-drag remove /path/to/quickCss.css
+```
+
+Quick CSS must be enabled in Vencord. Unmodified Discord has no Quick CSS hook.
+Run `popout-drag remove` before uninstalling PiP Sticky if you also want to remove
+the handle.
 
 ---
 
